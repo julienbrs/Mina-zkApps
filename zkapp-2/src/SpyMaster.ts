@@ -57,7 +57,7 @@ export function validateMessage(message: Message) {
 }
 
 export class SpyMaster extends SmartContract {
-  reducer = Reducer({ actionType: Field });
+  reducer = Reducer({ actionType: Message });
   // helper field to store the point in the action history that our on-chain state is at
   @state(Field) actionState = State<Field>();
   @state(Field) highestNumber = State<Field>();
@@ -74,10 +74,8 @@ export class SpyMaster extends SmartContract {
   }
 
   @method addMessageToBatch(message: Message) {
-    const isValid = validateMessage(message);
-    isValid.assertEquals(Bool(true));
-    this.reducer.dispatch(message.number);
-    this.emitEvent('dispatched', message.number);
+    this.reducer.dispatch(message);
+    this.emitEvent('dispatched', message.number); // Emitting only the number for testing
   }
 
   @method processBatch() {
@@ -93,15 +91,23 @@ export class SpyMaster extends SmartContract {
         pendingActions,
         // state type, here highestNumber is a Field
         Field,
-        // State = current highest number, action = new message number
-        (state: Field, action: Field) => {
-          const newHighestFound = Provable.if(
-            state.lessThan(action),
-            action,
+        // State = current highest number, message = message to be processed
+        (state: Field, message: Message) => {
+          const isDuplicate = message.number.lessThanOrEqual(state);
+
+          const shouldBeConsidered = Provable.if(
+            isDuplicate.or(validateMessage(message)),
+            Bool(true),
+            Bool(false)
+          );
+
+          const highestFound = Provable.if(
+            shouldBeConsidered,
+            Provable.if(state.lessThan(message.number), message.number, state),
             state
           );
 
-          return newHighestFound;
+          return highestFound;
         },
         {
           state: currentHighestNumber,
@@ -114,6 +120,6 @@ export class SpyMaster extends SmartContract {
 
     this.highestNumber.set(newHighest);
     this.actionState.set(newActionState);
-    this.emitEvent('processed', newHighest);
+    this.emitEvent('processed', newHighest); // Emitting only the number for testing
   }
 }

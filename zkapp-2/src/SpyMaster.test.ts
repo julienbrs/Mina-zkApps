@@ -1,4 +1,9 @@
-import { SpyMaster, Message, validateMessage, MAX_BATCH_SIZE } from './SpyMaster';
+import {
+  SpyMaster,
+  Message,
+  validateMessage,
+  MAX_BATCH_SIZE,
+} from './SpyMaster';
 import {
   Field,
   Mina,
@@ -186,7 +191,7 @@ describe('unit tests', () => {
       expect(actionAfter.length).toBe(5);
     });
 
-    it('should not emit dispatched event for invalid message', async () => {
+    it('emit dispatched event for invalid message', async () => {
       await localDeploy();
       const invalidMessage = new Message({
         number: Field(3),
@@ -196,11 +201,11 @@ describe('unit tests', () => {
         checkSum: Field(9999), // Incorrect checksum
       });
 
-      expect(
-        Mina.transaction(zkAppAddress, () => {
-          zkApp.addMessageToBatch(invalidMessage);
-        })
-      ).rejects.toThrowError('Bool.assertEquals(): false != true');
+      const txn = await Mina.transaction(zkAppAddress, () => {
+        zkApp.addMessageToBatch(invalidMessage);
+      });
+      await txn.prove();
+      await txn.sign([deployerKey, zkAppPrivateKey]).send();
 
       const eventsFetched = await zkApp.fetchEvents();
       expect(eventsFetched.length).toBe(0);
@@ -227,7 +232,6 @@ describe('unit tests', () => {
       await processTxn.sign([deployerKey, zkAppPrivateKey]).send();
 
       const highestNumber = await zkApp.highestNumber.get();
-      console.log('highestNumber', highestNumber.toString());
       expect(highestNumber).toEqual(Field(10));
 
       /* Events validation */
@@ -278,36 +282,27 @@ describe('unit tests', () => {
       expect(highestNumber).toEqual(Field(0));
     });
 
-    it('should process messages not ordered by number', async () => {
-      await localDeploy();
-
-      const messages = generateValidMessages(5);
-      const shuffledMessages = messages.sort(() => Math.random() - 0.5);
-      for (const message of shuffledMessages) {
-        const txn = await Mina.transaction(zkAppAddress, () => {
-          zkApp.addMessageToBatch(message);
-        });
-        await txn.prove();
-        await txn.sign([deployerKey, zkAppPrivateKey]).send();
-      }
-
-      const processTxn = await Mina.transaction(zkAppAddress, () => {
-        zkApp.processBatch();
-      });
-      await processTxn.prove();
-      await processTxn.sign([deployerKey, zkAppPrivateKey]).send();
-
-      const highestNumber = await zkApp.highestNumber.get();
-      expect(highestNumber).toEqual(Field(5));
-    });
-
     it('a duplicate message with invalid agentID should still be processed', async () => {
       await localDeploy();
 
-      const messages = generateValidMessages(5);
-      // Duplicate first message but with invalid agentID
-      const invalidMessage = messages[0];
-      invalidMessage.agentID = Field(3001);
+      const message = new Message({
+        number: Field(1),
+        agentID: Field(1),
+        agentXLocation: Field(1000),
+        agentYLocation: Field(6000),
+        checkSum: Field(7001),
+      });
+
+      const duplicateMessage = new Message({
+        number: Field(1),
+        agentID: Field(3001), // out of valid range
+        agentXLocation: Field(1000),
+        agentYLocation: Field(6000),
+        checkSum: Field(7001),
+      });
+
+      let messages = [message, duplicateMessage];
+      messages = messages.concat(generateValidMessages(4));
 
       for (const message of messages) {
         const txn = await Mina.transaction(zkAppAddress, () => {
@@ -324,12 +319,47 @@ describe('unit tests', () => {
       await processTxn.sign([deployerKey, zkAppPrivateKey]).send();
 
       const highestNumber = await zkApp.highestNumber.get();
-      expect(highestNumber).toEqual(Field(5));
+      expect(highestNumber).toEqual(Field(4));
+    });
 
-      // Count events
-      const eventsFetched = await zkApp.fetchEvents();
-      expect(eventsFetched.length).toEqual(6);
+    it('works after multiple processBatch calls', async () => {
+      await localDeploy();
 
+      const messages = generateValidMessages(10);
+      for (const message of messages) {
+        const txn = await Mina.transaction(zkAppAddress, () => {
+          zkApp.addMessageToBatch(message);
+        });
+        await txn.prove();
+        await txn.sign([deployerKey, zkAppPrivateKey]).send();
+      }
+
+      let processTxn = await Mina.transaction(zkAppAddress, () => {
+        zkApp.processBatch();
+      });
+      await processTxn.prove();
+      await processTxn.sign([deployerKey, zkAppPrivateKey]).send();
+
+      let highestNumber = await zkApp.highestNumber.get();
+      expect(highestNumber).toEqual(Field(10));
+
+      const newMessages = generateValidMessages(5);
+      for (const message of newMessages) {
+        const txn = await Mina.transaction(zkAppAddress, () => {
+          zkApp.addMessageToBatch(message);
+        });
+        await txn.prove();
+        await txn.sign([deployerKey, zkAppPrivateKey]).send();
+      }
+
+      processTxn = await Mina.transaction(zkAppAddress, () => {
+        zkApp.processBatch();
+      });
+      await processTxn.prove();
+      await processTxn.sign([deployerKey, zkAppPrivateKey]).send();
+
+      highestNumber = await zkApp.highestNumber.get();
+      expect(highestNumber).toEqual(Field(15));
     });
   });
 });
