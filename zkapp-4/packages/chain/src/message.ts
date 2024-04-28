@@ -5,7 +5,15 @@ import {
   RuntimeModule,
 } from "@proto-kit/module";
 import { StateMap, assert } from "@proto-kit/protocol";
-import { Bool, Character, Provable, PublicKey, Struct, Field } from "o1js";
+import {
+  Bool,
+  Character,
+  Provable,
+  PublicKey,
+  Struct,
+  Field,
+  UInt64,
+} from "o1js";
 
 /// Constants
 export const MAX_MESSAGE_LENGTH = 12;
@@ -37,7 +45,10 @@ export class SecurityCode extends Struct({
     return this.code[0].equals(x.code[0]).and(this.code[1].equals(x.code[1]));
   }
   isValidLength() {
-    assert(Bool(this.code.length === SECURITY_CODE_LENGTH), ERRORS.INVALID_LENGTH_SECURITY_CODE);
+    assert(
+      Bool(this.code.length === SECURITY_CODE_LENGTH),
+      ERRORS.INVALID_LENGTH_SECURITY_CODE
+    );
   }
 }
 export class Message extends Struct({
@@ -51,6 +62,11 @@ export class Message extends Struct({
       ),
     });
   }
+
+  public calculateLength(): Field {
+    return Field(this.message.length);
+  }
+
 }
 
 export class MessageDetails extends Struct({
@@ -81,12 +97,36 @@ export class AgentDetails extends Struct({
   }
 }
 
+export class AgentTxInfo extends Struct({
+  blockHeight: UInt64,
+  msgSenderPubKey: PublicKey,
+  msgTxNonce: UInt64,
+}) {}
+
 @runtimeModule()
 export class Messages extends RuntimeModule<{ owner: PublicKey }> {
   @state() public mapAgent = StateMap.from<AgentID, AgentDetails>(
     AgentID,
     AgentDetails
   );
+  @state() public agentTxInfo = StateMap.from<AgentID, AgentTxInfo>(
+    AgentID,
+    AgentTxInfo
+  );
+
+  // Internal function
+  public updateMapAgent(agentID: AgentID, agentDetails: AgentDetails): void {
+    this.mapAgent.set(
+      agentID,
+      agentDetails
+    );
+  }
+
+  protected isAgentKnown(agentID: AgentID): AgentDetails {
+    const { isSome, value } = this.mapAgent.get(agentID);
+    assert(isSome, ERRORS.AGENT_DOES_NOT_EXIST);
+    return value;
+  }
 
   @runtimeMethod()
   public newAgent(agentID: AgentID, securityCode: SecurityCode): void {
@@ -101,6 +141,14 @@ export class Messages extends RuntimeModule<{ owner: PublicKey }> {
       securityCode
     );
     this.mapAgent.set(agentID, messageDetails);
+    this.agentTxInfo.set(
+      agentID,
+      new AgentTxInfo({
+        blockHeight: new UInt64(this.network.block.height),
+        msgSenderPubKey: new PublicKey(this.transaction.sender),
+        msgTxNonce: new UInt64(this.transaction.nonce),
+      })
+    );
   }
 
   @runtimeMethod()
@@ -126,9 +174,22 @@ export class Messages extends RuntimeModule<{ owner: PublicKey }> {
       ERRORS.SECURITY_CODE_MISMATCH
     );
     /// [UPDATE] the agent state
-    this.mapAgent.set(
+    this.updateMapAgent(
       agentID,
-      new AgentDetails({ lastReceived: messageNumber, message, securityCode })
+      AgentDetails.create(
+        messageNumber,
+        message,
+        agentData.securityCode
+      )
+    );
+
+    this.agentTxInfo.set(
+      agentID,
+      new AgentTxInfo({
+        blockHeight: new UInt64(this.network.block.height),
+        msgSenderPubKey: new PublicKey(this.transaction.sender),
+        msgTxNonce: new UInt64(this.transaction.nonce),
+      })
     );
   }
 }
